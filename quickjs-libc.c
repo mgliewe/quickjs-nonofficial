@@ -79,6 +79,7 @@ typedef struct {
 typedef struct {
     struct list_head link;
     BOOL has_object;
+    int64_t interval;
     int64_t timeout;
     JSValue func;
 } JSOSTimer;
@@ -1710,19 +1711,11 @@ static void js_os_timer_mark(JSRuntime *rt, JSValueConst val,
     }
 }
 
-static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
-                                int argc, JSValueConst *argv)
+static JSValue js_os_create_timer(JSContext *ctx, int64_t interval, int64_t delay, JSValueConst func)
 {
-    int64_t delay;
-    JSValueConst func;
     JSOSTimer *th;
     JSValue obj;
 
-    func = argv[0];
-    if (!JS_IsFunction(ctx, func))
-        return JS_ThrowTypeError(ctx, "not a function");
-    if (JS_ToInt64(ctx, &delay, argv[1]))
-        return JS_EXCEPTION;
     obj = JS_NewObjectClass(ctx, js_os_timer_class_id);
     if (JS_IsException(obj))
         return obj;
@@ -1732,11 +1725,55 @@ static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     }
     th->has_object = TRUE;
+    th->interval = interval;
     th->timeout = get_time_ms() + delay;
     th->func = JS_DupValue(ctx, func);
     list_add_tail(&th->link, &os_timers);
     JS_SetOpaque(obj, th);
     return obj;
+}
+
+
+static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
+{
+    int64_t delay;
+    JSValueConst func;
+
+    func = argv[0];
+    if (!JS_IsFunction(ctx, func))
+        return JS_ThrowTypeError(ctx, "not a function");
+    if (JS_ToInt64(ctx, &delay, argv[1]))
+        return JS_EXCEPTION;
+
+    return js_os_create_timer(ctx, 0, delay, func);
+}
+
+static JSValue js_os_setInterval(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
+{
+    int64_t delay;
+    JSValueConst func;
+
+    func = argv[0];
+    if (!JS_IsFunction(ctx, func))
+        return JS_ThrowTypeError(ctx, "not a function");
+    if (JS_ToInt64(ctx, &delay, argv[1]))
+        return JS_EXCEPTION;
+
+    return js_os_create_timer(ctx, delay, delay, func);
+}
+
+static JSValue js_os_setImmediate(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
+{
+    JSValueConst func;
+
+    func = argv[0];
+    if (!JS_IsFunction(ctx, func))
+        return JS_ThrowTypeError(ctx, "not a function");
+
+    return js_os_create_timer(ctx, 0, 0, func);
 }
 
 static JSValue js_os_clearTimeout(JSContext *ctx, JSValueConst this_val,
@@ -1793,12 +1830,17 @@ static int js_os_poll(JSContext *ctx)
                 JSValue func;
                 /* the timer expired */
                 func = th->func;
-                th->func = JS_UNDEFINED;
-                unlink_timer(JS_GetRuntime(ctx), th);
-                if (!th->has_object)
-                    free_timer(JS_GetRuntime(ctx), th);
-                call_handler(ctx, func);
-                JS_FreeValue(ctx, func);
+                if (th->interval>0) {
+                    th->timeout = cur_time + th->interval;
+                    call_handler(ctx, func);
+                } else {
+                    th->func = JS_UNDEFINED;
+                    unlink_timer(JS_GetRuntime(ctx), th);
+                    if (!th->has_object)
+                        free_timer(JS_GetRuntime(ctx), th);
+                    call_handler(ctx, func);
+                    JS_FreeValue(ctx, func);
+                }
                 return 0;
             } else if (delay < min_delay) {
                 min_delay = delay;
@@ -1879,12 +1921,17 @@ static int js_os_poll(JSContext *ctx)
                 JSValue func;
                 /* the timer expired */
                 func = th->func;
-                th->func = JS_UNDEFINED;
-                unlink_timer(JS_GetRuntime(ctx), th);
-                if (!th->has_object)
-                    free_timer(JS_GetRuntime(ctx), th);
-                call_handler(ctx, func);
-                JS_FreeValue(ctx, func);
+                if (th->interval>0) {
+                    th->timeout = cur_time + th->interval;
+                    call_handler(ctx, func);
+                } else {
+                    th->func = JS_UNDEFINED;
+                    unlink_timer(JS_GetRuntime(ctx), th);
+                    if (!th->has_object)
+                        free_timer(JS_GetRuntime(ctx), th);
+                    call_handler(ctx, func);
+                    JS_FreeValue(ctx, func);
+                }
                 return 0;
             } else if (delay < min_delay) {
                 min_delay = delay;
@@ -2254,7 +2301,11 @@ static const JSCFunctionListEntry js_os_funcs[] = {
     OS_FLAG(SIGSEGV),
     OS_FLAG(SIGTERM),
     JS_CFUNC_DEF("setTimeout", 2, js_os_setTimeout ),
+    JS_CFUNC_DEF("setInterval", 2, js_os_setInterval ),
+    JS_CFUNC_DEF("setImmediate", 1, js_os_setImmediate ),
     JS_CFUNC_DEF("clearTimeout", 1, js_os_clearTimeout ),
+    JS_CFUNC_DEF("clearInterval", 1, js_os_clearTimeout ),
+    JS_CFUNC_DEF("clearImmediate", 1, js_os_clearTimeout ),
     JS_PROP_STRING_DEF("platform", OS_PLATFORM, 0 ),
     JS_CFUNC_DEF("getcwd", 0, js_os_getcwd ),
     JS_CFUNC_DEF("realpath", 1, js_os_realpath ),
