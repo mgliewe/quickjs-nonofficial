@@ -18,6 +18,7 @@ repl-bn.c
 repl.c
 run-test262
 run-test262-bn
+unicode_gen
 
 test262_report.txt
 test262bn_report.txt
