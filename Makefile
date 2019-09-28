@@ -150,6 +150,8 @@ PROGS+=examples/hello examples/hello_module examples/c_module
 endif
 endif
 
+PROGS+=qjs-config 
+
 all: $(OBJDIR) $(OBJDIR)/quickjs.check.o $(OBJDIR)/qjs.check.o $(PROGS)
 
 QJS_LIB_OBJS=$(OBJDIR)/quickjs.o $(OBJDIR)/libregexp.o $(OBJDIR)/libunicode.o $(OBJDIR)/cutils.o $(OBJDIR)/quickjs-libc.o
@@ -328,11 +330,22 @@ clean:
 	rm -f hello.c hello_module.c c_module.c 
 	rm -rf $(OBJDIR)/ *.dSYM/ qjs-debug qjsbn-debug
 	rm -rf run-test262-debug run-test262-32 run-test262-bn32
+	chmod +x $@
+
+qjs-config: qjs-config.in VERSION
+	@echo '#!/bin/bash'>$@
+	@echo version=`cat VERSION` >>$@
+	@echo prefix=$(prefix) >>$@
+ifdef CONFIG_LTO
+	@echo ltosuffix=.lto >>$@
+endif
+	@cat qjs-config.in >>$@
+	@chmod +x qjs-config
 
 install: all
 	mkdir -p "$(DESTDIR)$(prefix)/bin"
 	$(STRIP) qjs qjsbn qjsc qjsbnc
-	install -m755 qjs qjsbn qjsc qjsbnc "$(DESTDIR)$(prefix)/bin"
+	install -m755 qjs qjsbn qjsc qjsbnc qjs-config "$(DESTDIR)$(prefix)/bin"
 	ln -sf qjsbn "$(DESTDIR)$(prefix)/bin/qjscalc"
 	mkdir -p "$(DESTDIR)$(prefix)/lib/quickjs"
 	install -m644 libquickjs.a libquickjs.bn.a "$(DESTDIR)$(prefix)/lib/quickjs"
@@ -340,7 +353,7 @@ ifdef CONFIG_LTO
 	install -m644 libquickjs.lto.a libquickjs.bn.lto.a "$(DESTDIR)$(prefix)/lib/quickjs"
 endif
 	mkdir -p "$(DESTDIR)$(prefix)/include/quickjs"
-	install -m644 quickjs.h quickjs-libc.h "$(DESTDIR)$(prefix)/include/quickjs"
+	install -m644 quickjs.h quickjs-libc.h cutils.h list.h "$(DESTDIR)$(prefix)/include/quickjs"
 
 ###############################################################################
 # examples
