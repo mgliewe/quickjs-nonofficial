@@ -330,7 +330,6 @@ clean:
 	rm -f hello.c hello_module.c c_module.c 
 	rm -rf $(OBJDIR)/ *.dSYM/ qjs-debug qjsbn-debug
 	rm -rf run-test262-debug run-test262-32 run-test262-bn32
-	chmod +x $@
 
 qjs-config: qjs-config.in VERSION
 	@echo '#!/bin/bash'>$@
