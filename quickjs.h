@@ -226,6 +226,7 @@ static inline JSValue __JS_NewFloat64(JSContext *ctx, double d)
 #define JS_VALUE_IS_BOTH_FLOAT(v1, v2) (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(v1)) && JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(v2)))
 
 #define JS_VALUE_GET_OBJ(v) ((JSObject *)JS_VALUE_GET_PTR(v))
+#define JS_VALUE_GET_OBJ_PTR_HASH(v) ((uint64_t)JS_VALUE_GET_PTR(v))
 #define JS_VALUE_GET_STRING(v) ((JSString *)JS_VALUE_GET_PTR(v))
 #define JS_VALUE_HAS_REF_COUNT(v) ((unsigned)JS_VALUE_GET_TAG(v) >= (unsigned)JS_TAG_FIRST)
 
@@ -763,10 +764,12 @@ int JS_ExecutePendingJob(JSRuntime *rt, JSContext **pctx);
 /* Object Writer/Reader (currently only used to handle precompiled code) */
 #define JS_WRITE_OBJ_BYTECODE (1 << 0) /* allow function/module */
 #define JS_WRITE_OBJ_BSWAP    (1 << 1) /* byte swapped output */
+#define JS_WRITE_OBJ_STRUCTURED (1 << 2) /* allow cyclic objects */
 uint8_t *JS_WriteObject(JSContext *ctx, size_t *psize, JSValueConst obj,
                         int flags);
 #define JS_READ_OBJ_BYTECODE  (1 << 0) /* allow function/module */
 #define JS_READ_OBJ_ROM_DATA  (1 << 1) /* avoid duplicating 'buf' data */
+#define JS_READ_OBJ_STRUCTURED (1 << 2) /* allow cyclic objects */
 JSValue JS_ReadObject(JSContext *ctx, const uint8_t *buf, size_t buf_len,
                       int flags);
 /* load the dependencies of the module 'obj'. Useful when JS_ReadObject()

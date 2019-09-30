@@ -201,6 +201,66 @@ void dbuf_free(DynBuf *s)
     memset(s, 0, sizeof(*s));
 }
 
+int dbuf_bsearch(DynBuf *s, uint32_t key, size_t size)
+{
+    uint8_t *ptr = s->buf;
+    int i=0, j=s->size/size;
+    int n;
+    uint32_t *p; 
+    while (i<j) {
+        n = (i+j-1)/2; // i + (j-1-i)/2
+        p = (uint32_t *)(ptr + (n*size));
+        if (key == *p) {
+            return n;
+        }
+        if (key > *p) {
+            i=n+1;
+        } else {
+            j=n-1;
+        }
+    }
+    return -1;
+}
+
+int dbuf_binsert(DynBuf *s, void *record, size_t size)
+{
+    uint32_t key;
+    uint8_t *ptr = s->buf;
+    int i=0, j=s->size/size;
+    int n;
+    uint32_t *p;
+
+    key = *(uint32_t *)record;
+
+    while (i<j) {
+        p = (uint32_t *)(ptr + (j*size));
+        if (*p < key) {
+            n = j;
+            break;
+        }
+        n = (i+j-1)/2; // i + (j-i)/2
+        p = (uint32_t *)(ptr + (n*size));
+        if (key > *p) {
+            i=n+1;
+        } else {
+            j=n-1;
+        }
+    }
+    if (i>=j) {
+        n = s->size/size;
+    }
+
+    if (s->allocated_size < s->size+size) {
+        fflush(stdout);
+        dbuf_realloc(s,s->size + size);
+    }
+    p = (uint32_t *)(s->buf + (n*size));
+    memcpy(p+size, p, s->size - n*size);
+    s->size += size;
+    memcpy(p, record, size);
+    return n;
+}
+
 /* Note: at most 31 bits are encoded. At most UTF8_CHAR_LEN_MAX bytes
    are output. */
 int unicode_to_utf8(uint8_t *buf, unsigned int c)

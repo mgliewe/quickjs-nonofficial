@@ -268,6 +268,11 @@ void dbuf_free(DynBuf *s);
 static inline BOOL dbuf_error(DynBuf *s) {
     return s->error;
 }
+inline size_t dbuf_tell(DynBuf *s) {
+    return s->size;
+}
+int dbuf_bsearch(DynBuf *s, uint32_t key, size_t recsize);
+int dbuf_binsert(DynBuf *s, void *record, size_t recsize);
 
 #define UTF8_CHAR_LEN_MAX 6
 

@@ -31678,6 +31678,7 @@ typedef enum BCTagEnum {
     BC_TAG_TEMPLATE_OBJECT,
     BC_TAG_FUNCTION_BYTECODE,
     BC_TAG_MODULE,
+    BC_TAG_REFERENCE,
 } BCTagEnum;
 
 #ifdef CONFIG_BIGNUM
@@ -31695,8 +31696,10 @@ typedef enum BCTagEnum {
 typedef struct BCWriterState {
     JSContext *ctx;
     DynBuf dbuf;
+    DynBuf object_index;
     BOOL byte_swap;
     BOOL allow_bytecode;
+    BOOL structured_copy;
     uint32_t first_atom;
     uint32_t *atom_to_idx;
     int atom_to_idx_size;
@@ -31722,6 +31725,7 @@ static const char * const bc_tag_str[] = {
     "template",
     "function",
     "module",
+    "reference",
 };
 #endif
 
@@ -31836,6 +31840,39 @@ static int bc_put_atom(BCWriterState *s, JSAtom atom)
     }
     bc_put_leb128(s, v);
     return 0;
+}
+
+typedef struct {
+    uint64_t hash;
+    size_t offset;
+} BCWriterIndex;
+
+static size_t bc_lookup_written_obj(BCWriterState *s, uint64_t hash)
+{
+    BCWriterIndex *entry;
+    int n;
+
+    n = dbuf_bsearch(&s->object_index, hash, sizeof (*entry));
+    if (n<0)
+        return SIZE_MAX;
+
+    entry = (BCWriterIndex *) (s->object_index.buf + (n*sizeof (*entry)));
+    return entry->offset;
+}
+
+static void bc_insert_written_obj(BCWriterState *s, uint64_t hash, size_t offset)
+{
+    BCWriterIndex entry;
+
+    entry.hash = hash;
+    entry.offset = offset;
+
+    dbuf_binsert(&s->object_index, &entry, sizeof(entry));
+}
+
+static size_t bc_write_offset(BCWriterState *s)
+{
+    return s->dbuf.size;
 }
 
 static void bc_byte_swap(uint8_t *bc_buf, int bc_len)
@@ -32128,17 +32165,32 @@ static int JS_WriteObjectRec(BCWriterState *s, JSValueConst obj)
             int ret, pass;
             BOOL is_template;
             JSAtom atom;
+            uint64_t hash = JS_VALUE_GET_OBJ_PTR_HASH(obj);
+            size_t offset;
 
             if (p->class_id != JS_CLASS_ARRAY &&
                 p->class_id != JS_CLASS_OBJECT) {
                 JS_ThrowTypeError(s->ctx, "unsupported object class");
                 goto fail;
             }
-            if (p->tmp_mark) {
-                JS_ThrowTypeError(s->ctx, "circular reference");
-                goto fail;
+
+            if (s->structured_copy) {
+                offset = bc_lookup_written_obj(s, hash);
+                if (offset != SIZE_MAX) {
+                    bc_put_u8(s, BC_TAG_REFERENCE);
+                    bc_put_u64(s, offset);
+                    break;
+                }
+                offset = bc_write_offset(s);
+                bc_insert_written_obj(s, hash, offset);
+            } else {
+                if (p->tmp_mark) {
+                    JS_ThrowTypeError(s->ctx, "circular reference");
+                    goto fail;
+                }
+                p->tmp_mark = 1;
             }
-            p->tmp_mark = 1;
+
             if (p->class_id == JS_CLASS_ARRAY) {
                 if (s->allow_bytecode && !p->extensible) {
                     /* not extensible array: we consider it is a
@@ -32200,7 +32252,9 @@ static int JS_WriteObjectRec(BCWriterState *s, JSValueConst obj)
                     }
                 }
             }
-            p->tmp_mark = 0;
+            if (!s->structured_copy) {
+                p->tmp_mark = 0;
+            }
         }
         break;
 #ifdef CONFIG_BIGNUM
@@ -32338,17 +32392,22 @@ uint8_t *JS_WriteObject(JSContext *ctx, size_t *psize, JSValueConst obj,
     /* XXX: byte swapped output is untested */
     s->byte_swap = ((flags & JS_WRITE_OBJ_BSWAP) != 0);
     s->allow_bytecode = ((flags & JS_WRITE_OBJ_BYTECODE) != 0);
+    s->structured_copy = ((flags & JS_WRITE_OBJ_STRUCTURED) != 0);
+
     /* XXX: could use a different version when bytecode is included */
     if (s->allow_bytecode)
         s->first_atom = JS_ATOM_END;
     else
         s->first_atom = 1;
     js_dbuf_init(ctx, &s->dbuf);
+    js_dbuf_init(ctx, &s->object_index);
 
     if (JS_WriteObjectRec(s, obj))
         goto fail;
     if (JS_WriteObjectAtoms(s))
         goto fail;
+
+    dbuf_free(&s->object_index);
     js_free(ctx, s->atom_to_idx);
     js_free(ctx, s->idx_to_atom);
     *psize = s->dbuf.size;
@@ -32356,6 +32415,7 @@ uint8_t *JS_WriteObject(JSContext *ctx, size_t *psize, JSValueConst obj,
  fail:
     js_free(ctx, s->atom_to_idx);
     js_free(ctx, s->idx_to_atom);
+    dbuf_free(&s->object_index);
     dbuf_free(&s->dbuf);
     *psize = 0;
     return NULL;
@@ -32363,12 +32423,14 @@ uint8_t *JS_WriteObject(JSContext *ctx, size_t *psize, JSValueConst obj,
 
 typedef struct BCReaderState {
     JSContext *ctx;
-    const uint8_t *buf_start, *ptr, *buf_end;
+    const uint8_t *buf_start, *ptr, *buf_end, *obj_start;
+    DynBuf object_index;
     uint32_t first_atom;
     uint32_t idx_to_atom_count;
     JSAtom *idx_to_atom;
     int error_state;
     BOOL allow_bytecode;
+    BOOL structured_copy;
     BOOL is_rom_data;
 #ifdef DUMP_READ_OBJECT
     const uint8_t *ptr_last;
@@ -32545,6 +32607,42 @@ static int bc_get_atom(BCReaderState *s, JSAtom *patom)
     }
 }
 
+typedef struct {
+    size_t offset;
+    JSValue value;
+} BCReaderIndex;
+
+static BOOL bc_lookup_read_object(BCReaderState *s, uint64_t offset, JSValue *value) 
+{
+    BCReaderIndex *entry;
+    int n;
+
+    n = dbuf_bsearch(&s->object_index, offset, sizeof(*entry));
+    if (n<0) {
+        return FALSE;
+    }
+
+    entry = (BCReaderIndex *) (s->object_index.buf + n*sizeof (*entry));
+    *value = entry->value;
+
+    return TRUE;
+}
+
+static void bc_insert_read_object(BCReaderState *s, uint64_t offset, JSValue value)
+{
+    BCReaderIndex entry;
+
+    entry.offset = offset;
+    entry.value = value;
+
+    dbuf_binsert(&s->object_index, &entry, sizeof (entry)); 
+}
+
+static size_t bc_read_offset(BCReaderState *s)
+{
+    return s->obj_start - s->ptr;
+}
+
 static JSString *JS_ReadString(BCReaderState *s)
 {
     uint32_t len;
@@ -32648,7 +32746,9 @@ static JSValue JS_ReadObjectRec(BCReaderState *s)
     uint8_t tag;
     JSValue obj = JS_UNDEFINED;
     JSModuleDef *m = NULL;
+    size_t offset;
 
+    offset = bc_read_offset(s);
     if (bc_get_u8(s, &tag))
         return JS_EXCEPTION;
 
@@ -32977,6 +33077,10 @@ static JSValue JS_ReadObjectRec(BCReaderState *s)
             bc_read_trace(s, "%s {\n", bc_tag_str[tag]);
 
             obj = JS_NewObject(ctx);
+            if (s->structured_copy) {
+                bc_insert_read_object(s, offset, obj);
+            }
+
             if (bc_get_leb128(s, &prop_count))
                 goto fail;
             for(i = 0; i < prop_count; i++) {
@@ -33009,6 +33113,10 @@ static JSValue JS_ReadObjectRec(BCReaderState *s)
             bc_read_trace(s, "%s {\n", bc_tag_str[tag]);
 
             obj = JS_NewArray(ctx);
+            if (s->structured_copy) {
+                bc_insert_read_object(s, offset, obj);
+            }
+
             is_template = (tag == BC_TAG_TEMPLATE_OBJECT);
             if (bc_get_leb128(s, &len))
                 goto fail;
@@ -33039,6 +33147,20 @@ static JSValue JS_ReadObjectRec(BCReaderState *s)
             bc_read_trace(s, "}\n");
         }
         break;
+
+    case BC_TAG_REFERENCE:
+        if (!s->structured_copy)
+            goto invalid_tag;
+        if (bc_get_u64(s, &offset))
+            goto fail;
+        bc_read_trace(s, "$ref@%ul {\n", offset);
+        if (!bc_lookup_read_object(s, offset, &obj)) {
+            goto fail;
+        }
+        obj = JS_DupValue(ctx, obj);
+        bc_read_trace(s, "}\n");
+        break;
+
 #ifdef CONFIG_BIGNUM
     case BC_TAG_BIG_INT:
     case BC_TAG_BIG_FLOAT:
@@ -33212,12 +33334,16 @@ JSValue JS_ReadObject(JSContext *ctx, const uint8_t *buf, size_t buf_len,
         s->first_atom = JS_ATOM_END;
     else
         s->first_atom = 1;
+    s->structured_copy = ((flags & JS_READ_OBJ_STRUCTURED) != 0);
+    dbuf_init(&s->object_index);
     if (JS_ReadObjectAtoms(s)) {
         obj = JS_EXCEPTION;
     } else {
+        s->obj_start = s->ptr;
         obj = JS_ReadObjectRec(s);
     }
     bc_reader_free(s);
+    dbuf_free(&s->object_index);
     return obj;
 }
 

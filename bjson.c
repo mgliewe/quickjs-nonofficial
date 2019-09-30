@@ -41,7 +41,7 @@ static JSValue js_bjson_read(JSContext *ctx, JSValueConst this_val,
         return JS_EXCEPTION;
     if (pos + len > size)
         return JS_ThrowRangeError(ctx, "array buffer overflow");
-    obj = JS_ReadObject(ctx, buf + pos, len, 0);
+    obj = JS_ReadObject(ctx, buf + pos, len, JS_READ_OBJ_STRUCTURED);
     return obj;
 }
 
@@ -52,7 +52,7 @@ static JSValue js_bjson_write(JSContext *ctx, JSValueConst this_val,
     uint8_t *buf;
     JSValue array;
     
-    buf = JS_WriteObject(ctx, &len, argv[0], 0);
+    buf = JS_WriteObject(ctx, &len, argv[0], JS_WRITE_OBJ_STRUCTURED);
     if (!buf)
         return JS_EXCEPTION;
     array = JS_NewArrayBufferCopy(ctx, buf, len);
