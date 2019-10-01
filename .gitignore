@@ -19,6 +19,7 @@ repl.c
 run-test262
 run-test262-bn
 unicode_gen
+bjson.so
 
 test262_report.txt
 test262bn_report.txt
